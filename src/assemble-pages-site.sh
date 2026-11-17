@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PAGES_SIZE_LIMIT_BYTES="${PAGES_SIZE_LIMIT_BYTES:-1000000000}"
+MAX_REPORT_SIZE_MB="${MAX_REPORT_SIZE_MB:-1000}"
+case "$PAGES_SIZE_LIMIT_BYTES" in
+  ''|*[!0-9]*) echo "PAGES_SIZE_LIMIT_BYTES must be a non-negative integer" >&2; exit 1 ;;
+esac
+case "$MAX_REPORT_SIZE_MB" in
+  ''|*[!0-9]*) echo "MAX_REPORT_SIZE_MB must be a non-negative integer" >&2; exit 1 ;;
+esac
+MAX_REPORT_SIZE_BYTES=$((MAX_REPORT_SIZE_MB * 1024 * 1024))
+SITE_DIR="${SITE_DIR:-site}"
+EXISTING_SITE_DIR="${EXISTING_SITE_DIR:-gh-pages-current}"
+REPORT_DIR="${REPORT_DIR:-downloaded-report}"
+COVERAGE_DIR="${COVERAGE_DIR:-downloaded-coverage}"
+RUN_FOLDER="run-${GITHUB_RUN_NUMBER}"
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+
+site_size_bytes() {
+  [ -d "$SITE_DIR" ] || { echo 0; return; }
+  du -sb "$SITE_DIR" | awk '{print $1}'
+}
+
+format_mb() {
+  awk "BEGIN { printf \"%.1f MB\", $1 / 1024 / 1024 }"
+}
+
+site_size_mb() {
+  format_mb "$(site_size_bytes)"
+}
+
+# Delete the oldest run-* folders (lowest run number first, never the current
+# run) until the site fits under the Pages size limit.
+enforce_site_size_limit() {
+  if [ "$PAGES_SIZE_LIMIT_BYTES" -eq 0 ]; then
+    echo "[size] Total site size limit disabled"
+    return
+  fi
+  local current_size
+  current_size="$(site_size_bytes)"
+  echo "[size] Site size: $(format_mb "$current_size") (limit: $(format_mb "$PAGES_SIZE_LIMIT_BYTES"))"
+
+  while [ "$current_size" -gt "$PAGES_SIZE_LIMIT_BYTES" ]; do
+    local oldest_run
+    oldest_run="$(find "$SITE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'run-*' ! -name "${RUN_FOLDER}" -printf '%f
+' | sort -t- -k2,2n | head -n 1)"
+    if [ -z "$oldest_run" ]; then
+      echo "[size] No older runs left to delete."
+      return
+    fi
+    local folder_size
+    folder_size="$(du -sh "$SITE_DIR/$oldest_run" 2>/dev/null | awk '{print $1}' || echo '?')"
+    echo "[size] Removing oldest run: ${SITE_DIR}/${oldest_run} (${folder_size})"
+    rm -rf "$SITE_DIR/$oldest_run"
+    current_size="$(site_size_bytes)"
+  done
+
+  echo "[size] Within limit: $(format_mb "$current_size")"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if [ -d "$EXISTING_SITE_DIR" ]; then
+  mkdir -p "$SITE_DIR"
+  cp -a "$EXISTING_SITE_DIR"/. "$SITE_DIR"/
+  rm -rf "$SITE_DIR/.git"
+  echo "[site] Restored from ${EXISTING_SITE_DIR}: $(site_size_mb)"
+else
+  echo "[site] No existing Pages content — starting fresh"
+  mkdir -p "$SITE_DIR"
+fi
+
+# Copy the downloaded report to run-N/
+# download-artifact v4+ places files directly into the target dir (no subdir wrapper).
+found=0
+skipped_oversize=0
+report_src=""
+if [ -f "$REPORT_DIR/index.html" ]; then
+  report_src="$REPORT_DIR"
+elif [ -d "$REPORT_DIR" ]; then
+  for d in "$REPORT_DIR"/*/; do
+    [ -f "${d}index.html" ] && { report_src="${d%/}"; break; }
+  done
+fi
+if [ -n "$report_src" ]; then
+  report_bytes="$(du -sb "$report_src" | awk '{print $1}')"
+  if [ "$MAX_REPORT_SIZE_BYTES" -gt 0 ] && [ "$report_bytes" -gt "$MAX_REPORT_SIZE_BYTES" ]; then
+    echo "[add] Report is $(format_mb "$report_bytes"), over the ${MAX_REPORT_SIZE_MB} MiB limit — not publishing it (statistics only)."
+    skipped_oversize=1
+    rm -rf "$REPORT_DIR"
+  fi
+fi
+if [ -d "$REPORT_DIR" ]; then
+  if [ -f "$REPORT_DIR/index.html" ]; then
+    local_size="$(du -sh "$REPORT_DIR" 2>/dev/null | awk '{print $1}' || echo '?')"
+    echo "[add] Publishing report: ${REPORT_DIR}/ → ${SITE_DIR}/${RUN_FOLDER} (source size: ${local_size})"
+    rm -rf "$SITE_DIR/$RUN_FOLDER"
+    cp -r "$REPORT_DIR" "$SITE_DIR/$RUN_FOLDER"
+    echo "[add] Copied. Site size now: $(site_size_mb)"
+    found=1
+  else
+    for d in "$REPORT_DIR"/*/; do
+      [ -d "$d" ] || continue
+      [ -f "${d}index.html" ] || continue
+      local_size="$(du -sh "$d" 2>/dev/null | awk '{print $1}' || echo '?')"
+      echo "[add] Publishing report: ${d} → ${SITE_DIR}/${RUN_FOLDER} (source size: ${local_size})"
+      rm -rf "$SITE_DIR/$RUN_FOLDER"
+      cp -r "$d" "$SITE_DIR/$RUN_FOLDER"
+      echo "[add] Copied. Site size now: $(site_size_mb)"
+      found=1
+      break
+    done
+  fi
+fi
+
+if [ "$found" -eq 0 ] && [ "$skipped_oversize" -eq 0 ]; then
+  echo "[site] No report found in ${REPORT_DIR} — creating placeholder page"
+  mkdir -p "$SITE_DIR/$RUN_FOLDER"
+  cat > "$SITE_DIR/$RUN_FOLDER/index.html" <<HTML
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run #${GITHUB_RUN_NUMBER} — Report unavailable</title>
+<style>
+body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f0f2f5;display:flex;flex-direction:column;min-height:100vh}
+.topbar{background:#1a1a2e;color:#fff;padding:.75rem 2rem}
+.topbar-title{font-weight:700;font-size:1rem}
+.page{max-width:36rem;margin:4rem auto;padding:0 2rem;text-align:center}
+h1{font-size:1.5rem;color:#1a1a2e}
+p{color:#64748b}
+a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</head><body>
+<div class="topbar"><span class="topbar-title">StatsServiceBook &middot; Test Reports</span></div>
+<div class="page">
+<h1>Report not available</h1>
+<p>The Playwright report for run #${GITHUB_RUN_NUMBER} was not captured &mdash;
+the CI job may have been cancelled or the artifact upload may have failed.</p>
+<p><a href="../">&larr; Back to all reports</a></p>
+</div>
+</body></html>
+HTML
+fi
+
+# Publish the latest browser-side coverage summary at a stable Pages URL.
+mkdir -p "$SITE_DIR/coverage"
+coverage_file="$COVERAGE_DIR/coverage-summary.json"
+if [ -f "$coverage_file" ]; then
+  cp "$coverage_file" "$SITE_DIR/coverage/coverage-summary.json"
+  COVERAGE_FILE="$coverage_file" COVERAGE_HTML="$SITE_DIR/coverage/index.html" SITE_DIR="$SITE_DIR" \
+    GITHUB_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
+    GITHUB_RUN_URL="${GITHUB_RUN_URL:-}" \
+    python3 - <<'PY'
+import html
+import json
+import os
+from datetime import datetime
+
+with open(os.environ["COVERAGE_FILE"], encoding="utf-8") as source:
+    report = json.load(source)
+
+overall = float(report.get("overallPercent", 0))
+generated = report.get("generatedAt", "")
+badge = {
+    "schemaVersion": 1,
+    "label": "JS coverage",
+    "message": f"{overall:.2f}%",
+    "color": "brightgreen" if overall >= 80 else "yellow" if overall >= 50 else "orange" if overall > 0 else "red",
+}
+with open(os.path.join(os.path.dirname(os.environ["COVERAGE_HTML"]), "badge.json"), "w", encoding="utf-8") as output:
+    json.dump(badge, output)
+try:
+    generated = datetime.fromisoformat(generated.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M UTC")
+except (TypeError, ValueError):
+    generated = "Unknown"
+
+def tone(percent):
+    if percent >= 80:
+        return "good"
+    if percent >= 50:
+        return "medium"
+    return "low"
+
+rows = []
+for page in report.get("pages", []):
+    label = html.escape(str(page.get("label", "Unknown")))
+    percent = float(page.get("percent", 0))
+    covered = int(page.get("coveredStatements", 0))
+    total = int(page.get("totalStatements", 0))
+    rows.append(
+        '<tr>'
+        f'<th scope="row">{label}</th>'
+        f'<td><strong>{percent:.2f}%</strong>'
+        f'<div class="bar"><span class="{tone(percent)}" style="width:{max(0, min(100, percent)):.2f}%"></span></div></td>'
+        f'<td>{covered:,} / {total:,} statements</td>'
+        '</tr>'
+    )
+
+rows_html = "\n".join(rows) or '<tr><td colspan="3">No page coverage data was collected.</td></tr>'
+run_url = os.environ.get("GITHUB_RUN_URL", "")
+run_link = (
+    f'<a href="{html.escape(run_url, quote=True)}">GitHub Actions run #{html.escape(os.environ["GITHUB_RUN_NUMBER"])}</a>'
+    if run_url else f'GitHub Actions run #{html.escape(os.environ["GITHUB_RUN_NUMBER"])}'
+)
+run_number = html.escape(os.environ["GITHUB_RUN_NUMBER"])
+report_link = (
+    f'<a href="../run-{run_number}/">Playwright report for this run</a>'
+    if os.path.isdir(os.path.join(os.environ.get("SITE_DIR", "site"), f"run-{run_number}")) else ""
+)
+document = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playwright JavaScript Coverage — StatsServiceBook</title>
+<style>
+:root{{color-scheme:light dark;--bg:#f0f2f5;--card:#fff;--ink:#1a1a2e;--muted:#64748b;--line:#e2e8f0;--blue:#2563eb}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0f172a;--card:#1e293b;--ink:#e2e8f0;--muted:#94a3b8;--line:#334155;--blue:#60a5fa}}}}
+*{{box-sizing:border-box}}body{{font-family:system-ui,Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink)}}
+.topbar{{background:#1a1a2e;color:#fff;padding:.85rem max(1.25rem,calc((100% - 56rem)/2));font-weight:700}}
+main{{max-width:56rem;margin:0 auto;padding:2rem 1.25rem}}a{{color:var(--blue);text-decoration:none}}a:hover{{text-decoration:underline}}
+.nav{{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.25rem;font-size:.9rem}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:.8rem;padding:1.25rem;margin-bottom:1rem}}
+.summary{{display:flex;align-items:center;gap:1.25rem;flex-wrap:wrap}}.score{{font-size:2.6rem;font-weight:800;line-height:1}}
+.good{{color:#16a34a}}.medium{{color:#ca8a04}}.low{{color:#dc2626}}.muted{{color:var(--muted);font-size:.88rem}}
+table{{width:100%;border-collapse:collapse;text-align:left}}th,td{{padding:.8rem .55rem;border-bottom:1px solid var(--line);vertical-align:middle}}thead th{{font-size:.8rem;color:var(--muted)}}
+.bar{{height:.45rem;background:var(--line);border-radius:99px;overflow:hidden;margin-top:.4rem;max-width:18rem}}.bar span{{display:block;height:100%;border-radius:inherit;background:currentColor}}
+@media(max-width:36rem){{th,td{{padding:.65rem .35rem;font-size:.82rem}}}}
+</style>
+</head>
+<body>
+<header class="topbar">StatsServiceBook · Playwright Coverage</header>
+<main>
+<nav class="nav"><a href="../">← Test reports</a><a href="../stats/">Test statistics — last 30 days</a>{report_link}</nav>
+<section class="card summary">
+<div class="score {tone(overall)}">{overall:.2f}%</div>
+<div><h1>Browser-side JavaScript coverage</h1><div class="muted">Measured {html.escape(generated)} · {run_link}</div></div>
+</section>
+<section class="card">
+<h2>Coverage by page</h2>
+<p class="muted">Percentage of first-party JavaScript statements executed during the Playwright functional tests, including page interactions. Repeated visits are merged; a statement is covered if any test executes it. This does not include shell scripts or third-party libraries.</p>
+<table><thead><tr><th>Page</th><th>Coverage</th><th>Statements</th></tr></thead><tbody>{rows_html}</tbody></table>
+</section>
+</main>
+</body>
+</html>
+"""
+with open(os.environ["COVERAGE_HTML"], "w", encoding="utf-8") as output:
+    output.write(document)
+PY
+else
+  rm -f "$SITE_DIR/coverage/coverage-summary.json"
+  cat > "$SITE_DIR/coverage/badge.json" <<'JSON'
+{"schemaVersion":1,"label":"JS coverage","message":"unavailable","color":"lightgrey"}
+JSON
+  cat > "$SITE_DIR/coverage/index.html" <<HTML
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playwright coverage unavailable — StatsServiceBook</title>
+<style>body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f0f2f5;color:#1a1a2e}.topbar{background:#1a1a2e;color:#fff;padding:1rem 2rem;font-weight:700}main{max-width:42rem;margin:4rem auto;padding:0 1.5rem}p{color:#64748b}a{color:#2563eb;text-decoration:none}</style>
+</head><body><header class="topbar">StatsServiceBook · Playwright Coverage</header>
+<main><h1>Coverage unavailable</h1>
+<p>No coverage artifact was produced for this workflow run. The test job may have been cancelled or failed before collection completed.</p>
+<p><a href="../">← Back to test reports</a></p></main></body></html>
+HTML
+fi
+
+touch "$SITE_DIR/.nojekyll"
+
+cat > "$SITE_DIR/404.html" <<'HTML'
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="3;url=./..">
+<title>Report not found — StatsServiceBook</title>
+<style>
+body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f0f2f5;display:flex;flex-direction:column;min-height:100vh}
+.topbar{background:#1a1a2e;color:#fff;padding:.75rem 2rem}
+.topbar-title{font-weight:700;font-size:1rem}
+.page{max-width:36rem;margin:4rem auto;padding:0 2rem;text-align:center}
+h1{font-size:1.5rem;color:#1a1a2e}
+p{color:#64748b}
+a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</head><body>
+<div class="topbar"><span class="topbar-title">StatsServiceBook &middot; Test Reports</span></div>
+<div class="page">
+<h1>Report not found</h1>
+<p>This run has been pruned (oldest reports are removed to stay under the 1 GB Pages limit).</p>
+<p>Redirecting to <a href="./..">&larr; all reports</a>&hellip;</p>
+</div>
+<script>setTimeout(function(){window.location.href='./..'},3000)</script>
+</body></html>
+HTML
+
+echo "[size] Site size before size-limit enforcement: $(site_size_mb)"
+enforce_site_size_limit
+echo "[size] Final site size: $(site_size_mb)"
+
+# Root landing page listing recent run reports.
+{
+  echo '<!doctype html>'
+  echo '<html lang="en"><head><meta charset="utf-8">'
+  echo '<meta name="viewport" content="width=device-width, initial-scale=1">'
+  echo '<title>StatsServiceBook · Playwright Reports</title>'
+  echo '<style>'
+  echo 'body{font-family:system-ui,Arial,sans-serif;margin:0;background:#f0f2f5}'
+  echo '.topbar{background:#1a1a2e;color:#fff;padding:.75rem 2rem;display:flex;align-items:center;gap:1rem}'
+  echo '.topbar-title{font-weight:700;font-size:1rem;flex:1}'
+  echo '.topbar-meta{font-size:.78rem;color:#94a3b8}'
+  echo '.page{max-width:48rem;margin:0 auto;padding:2rem}'
+  echo '.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:1.25rem;margin-bottom:1rem}'
+  echo '.card h2{margin:0 0 .75rem;font-size:1rem;font-weight:700;color:#1a1a2e}'
+  echo 'ul{margin:0;padding:0 0 0 1.1rem}li{margin:.4rem 0}'
+  echo 'a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}'
+  echo '.stats-link{display:inline-flex;align-items:center;gap:.4rem;font-size:.875rem;font-weight:600;color:#2563eb;margin-bottom:1rem}'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<div class="topbar">'
+  echo '  <span class="topbar-title">StatsServiceBook · Playwright Reports</span>'
+  echo "  <span class=\"topbar-meta\">Run #${GITHUB_RUN_NUMBER} · $(date -u '+%Y-%m-%d %H:%M UTC')</span>"
+  echo '</div>'
+  echo '<div class="page">'
+  echo '<a class="stats-link" href="./stats/">📊 Test Statistics — last 30 days</a>'
+  echo '<a class="stats-link" href="./reusable-stats/">📋 Normalized Test Statistics</a>'
+  echo '<a class="stats-link" href="./coverage/">📈 Playwright JavaScript Coverage</a>'
+  echo '<div class="card">'
+  echo '<h2>Recent runs</h2>'
+  echo '<ul>'
+  run_found=0
+  while IFS= read -r name; do
+    if [ -f "$SITE_DIR/$name/index.html" ]; then
+      echo "<li><a href=\"./${name}/\">${name}</a></li>"
+      run_found=1
+    fi
+  done < <(find "$SITE_DIR" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -printf '%f\n' | sort -t- -k2,2nr)
+  [ "$run_found" -eq 0 ] && echo "<li>No HTML reports retained yet.</li>"
+  echo '</ul>'
+  echo '</div>'
+  echo "  <p style=\"font-size:.8rem;color:#94a3b8\">Commit: <code>${GITHUB_SHA_VALUE}</code> · Workflow: <strong>${GITHUB_WORKFLOW_NAME}</strong></p>"
+  echo '</div>'
+  echo '</body></html>'
+} > "$SITE_DIR/index.html"

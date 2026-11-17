@@ -1,8 +1,9 @@
 # Test report publisher for GitHub Pages
 
-This composite action stages a static report directory into a caller-provided
-Pages site and writes a small `reports.html` index. It does not deploy the site:
-the caller should assemble all content and run a single Pages deployment.
+This composite action assembles a caller-provided Pages site from the previously
+published site, report and coverage artifacts. It maintains the recent-runs
+landing page and size limit, stages static reports, and writes a `reports.html`
+index. It does not deploy Pages; the caller should run one final deployment.
 
 ## Usage
 
@@ -33,12 +34,22 @@ report generation is performed here.
 The destination must be a safe relative path. The source must not contain
 symbolic links. Existing reports at the same destination are replaced. The
 optional `max-reports` and `max-report-size-mb` inputs enforce report-count and
-per-report size limits; `0` disables each limit. The action requires Python 3
-on the runner.
+per-report size limits; `0` disables each limit. The action requires Bash and
+Python 3 on the runner.
 
 Outputs are `report-path` and `report-url-path`. The action writes
-`reports.html`; callers with an existing landing page can link to that page or
-use the staged report path directly.
+`reports.html`, updates the root landing page, carries forward the existing
+Pages directory, renders the browser-side coverage page, and prunes the oldest
+`run-*` reports if the site exceeds `max-site-size-bytes`. The default total
+site limit is 1,000,000,000 bytes. It creates a placeholder run page when no
+report artifact is available. `max-site-size-bytes` can be set to `0` to disable
+size-based pruning.
+
+The `existing-site-directory` input defaults to `gh-pages-current`; check out
+the current Pages branch there before calling the action to retain old reports
+and statistics. The `coverage-directory` input defaults to
+`downloaded-coverage` and should contain `coverage-summary.json` when coverage
+is available.
 
 ## Permissions and deployment
 

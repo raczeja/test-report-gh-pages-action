@@ -45,7 +45,8 @@ def safe_manifest_path(site_dir, path_text):
 
 
 def main():
-    source = Path(env("INPUT_REPORT_DIRECTORY")).resolve()
+    report_directory = env("INPUT_REPORT_DIRECTORY")
+    source = Path(report_directory).resolve() if report_directory else None
     site_dir = Path(env("INPUT_SITE_DIRECTORY", "site")).resolve()
     run_number = env("INPUT_RUN_NUMBER") or env("GITHUB_RUN_NUMBER", "0")
     destination = env("INPUT_DESTINATION") or f"run-{run_number}"
@@ -57,16 +58,16 @@ def main():
 
     if any("\n" in value or "\r" in value for value in (destination, run_number, report_type, run_url)):
         fail("destination, run-number, report-type, and run-url may not contain newlines")
-    if not source.is_dir():
-        fail(f"report directory does not exist: {source}")
-    if not (source / "index.html").is_file():
+    if source is not None and not source.is_dir():
+        source = None
+    if source is not None and not (source / "index.html").is_file():
         fail(f"report directory must contain index.html: {source}")
     if not re.fullmatch(r"[0-9]+", run_number):
         fail("run-number must contain only digits")
     relative = Path(destination)
     if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
         fail("destination must be a safe relative path within site-directory")
-    if any(path.is_symlink() for path in source.rglob("*")):
+    if source is not None and any(path.is_symlink() for path in source.rglob("*")):
         fail("report directory may not contain symbolic links")
     try:
         max_reports = int(env("INPUT_MAX_REPORTS", "0"))
@@ -75,9 +76,16 @@ def main():
         fail("max-reports and max-report-size-mb must be non-negative integers")
     if max_reports < 0 or max_report_size_mb < 0:
         fail("max-reports and max-report-size-mb must be non-negative integers")
-    source_size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+    source_size = (
+        sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+        if source is not None else 0
+    )
     if max_report_size_mb and source_size > max_report_size_mb * 1024 * 1024:
-        fail(f"report is {source_size} bytes, above the {max_report_size_mb} MiB limit")
+        print(
+            f"Skipping report ({source_size} bytes exceeds {max_report_size_mb} MiB)",
+            file=sys.stderr,
+        )
+        source = None
     parsed_url = urlparse(run_url)
     if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
         fail("run-url must be an absolute HTTP or HTTPS URL")
@@ -88,25 +96,26 @@ def main():
         fail("destination resolves outside site-directory")
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    staging = Path(tempfile.mkdtemp(prefix=".report-staging-", dir=target.parent))
-    backup = target.with_name(target.name + ".previous")
-    try:
-        shutil.copytree(source, staging, dirs_exist_ok=True)
-        if backup.exists():
-            remove_path(backup)
-        if target.exists():
-            target.replace(backup)
+    if source is not None:
+        staging = Path(tempfile.mkdtemp(prefix=".report-staging-", dir=target.parent))
+        backup = target.with_name(target.name + ".previous")
         try:
-            staging.replace(target)
-        except OSError:
-            if backup.exists() and not target.exists():
-                backup.replace(target)
-            raise
-        if backup.exists():
-            remove_path(backup)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+            shutil.copytree(source, staging, dirs_exist_ok=True)
+            if backup.exists():
+                remove_path(backup)
+            if target.exists():
+                target.replace(backup)
+            try:
+                staging.replace(target)
+            except OSError:
+                if backup.exists() and not target.exists():
+                    backup.replace(target)
+                raise
+            if backup.exists():
+                remove_path(backup)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
     manifest_path = site_dir / "reports.json"
     if manifest_path.exists():
@@ -131,12 +140,13 @@ def main():
         if old_path.is_dir() and (old_path / "index.html").is_file():
             if str(entry.get("run_number")) != run_number and entry.get("path") != relative.as_posix():
                 reports.append(entry)
-    reports.append({
-        "run_number": run_number,
-        "run_url": run_url,
-        "report_type": report_type,
-        "path": relative.as_posix(),
-    })
+    if source is not None:
+        reports.append({
+            "run_number": run_number,
+            "run_url": run_url,
+            "report_type": report_type,
+            "path": relative.as_posix(),
+        })
     reports.sort(key=lambda item: int(item["run_number"]), reverse=True)
     if max_reports:
         for expired in reports[max_reports:]:
@@ -164,9 +174,13 @@ def main():
     output = env("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as out:
-            out.write(f"report-path={target}\n")
-            out.write(f"report-url-path={relative.as_posix()}/\n")
-    print(f"Staged {report_type} report at {target}")
+            out.write(f"report-path={target if source is not None else ''}\n")
+            out.write(f"report-url-path={relative.as_posix() + '/' if source is not None else ''}\n")
+            out.write(f"published={'true' if source is not None else 'false'}\n")
+    if source is not None:
+        print(f"Staged {report_type} report at {target}")
+    else:
+        print("No report artifact was staged; Pages site assembly completed.")
 
 
 if __name__ == "__main__":
