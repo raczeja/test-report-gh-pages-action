@@ -77,6 +77,67 @@ class ReportActionTests(unittest.TestCase):
             self.assertTrue((site / "run-2/index.html").is_file())
             self.assertNotIn("run-1", (site / "reports.html").read_text())
 
+    def test_size_retention_removes_old_reports_until_site_fits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            (report / "index.html").write_text("new report")
+            site = root / "site"
+            old = site / "run-1"
+            old.mkdir(parents=True)
+            (old / "index.html").write_text("x" * 2048)
+            old_current = site / "run-4"
+            old_current.mkdir()
+            (old_current / "index.html").write_text("previous attempt")
+            newer = site / "run-2"
+            newer.mkdir()
+            (newer / "index.html").write_text("newer report")
+            (site / "reports.json").write_text(
+                '{"reports":[{"run_number":"1","run_url":"https://example.test/1",'
+                '"report_type":"Playwright","path":"run-1"},'
+                '{"run_number":"2","run_url":"https://example.test/2",'
+                '"report_type":"Playwright","path":"run-2"}]}'
+            )
+            (site / ".git").mkdir()
+            (site / ".git" / "history").write_text("commit history")
+            self.run_action({
+                "INPUT_REPORT_DIRECTORY": str(report),
+                "INPUT_SITE_DIRECTORY": str(site),
+                "INPUT_DESTINATION": "run-3",
+                "INPUT_RUN_NUMBER": "3",
+                "INPUT_RUN_URL": "https://example.test/3",
+                "INPUT_MAX_SITE_SIZE_BYTES": "2000",
+            })
+            self.assertFalse(old.exists())
+            self.assertTrue((site / "run-2/index.html").is_file())
+            self.assertTrue((site / "run-3/index.html").is_file())
+            self.assertFalse((site / ".git").exists())
+            self.assertLessEqual(
+                sum(path.lstat().st_size for path in site.rglob("*") if not path.is_dir()),
+                2000,
+            )
+            self.assertNotIn("run-1", (site / "reports.html").read_text())
+
+    def test_report_over_limit_is_not_staged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            (report / "index.html").write_text("too large")
+            output = root / "output"
+            self.run_action({
+                "INPUT_REPORT_DIRECTORY": str(report),
+                "INPUT_SITE_DIRECTORY": str(root / "site"),
+                "INPUT_DESTINATION": "run-4",
+                "INPUT_RUN_NUMBER": "4",
+                "INPUT_RUN_URL": "https://example.test/4",
+                "INPUT_MAX_REPORT_SIZE_BYTES": "4",
+                "GITHUB_OUTPUT": str(output),
+            })
+            self.assertFalse((root / "site/run-4").exists())
+            self.assertIn("published=false", output.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

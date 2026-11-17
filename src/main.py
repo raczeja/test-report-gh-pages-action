@@ -72,17 +72,22 @@ def main():
     try:
         max_reports = int(env("INPUT_MAX_REPORTS", "0"))
         max_report_size_mb = int(env("INPUT_MAX_REPORT_SIZE_MB", "0"))
+        max_report_size_bytes = int(env("INPUT_MAX_REPORT_SIZE_BYTES", "1000000000"))
+        max_site_size_bytes = int(env("INPUT_MAX_SITE_SIZE_BYTES", "1000000000"))
     except ValueError:
-        fail("max-reports and max-report-size-mb must be non-negative integers")
-    if max_reports < 0 or max_report_size_mb < 0:
-        fail("max-reports and max-report-size-mb must be non-negative integers")
+        fail("report and site size limits must be non-negative integers")
+    if max_reports < 0 or max_report_size_mb < 0 or max_report_size_bytes < 0 or max_site_size_bytes < 0:
+        fail("report and site size limits must be non-negative integers")
+    if max_report_size_mb:
+        max_report_size_bytes = max_report_size_mb * 1024 * 1024
     source_size = (
         sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
         if source is not None else 0
     )
-    if max_report_size_mb and source_size > max_report_size_mb * 1024 * 1024:
+    skipped_oversize = max_report_size_bytes > 0 and source is not None and source_size > max_report_size_bytes
+    if skipped_oversize:
         print(
-            f"Skipping report ({source_size} bytes exceeds {max_report_size_mb} MiB)",
+            f"Skipping report ({source_size} bytes exceeds {max_report_size_bytes} bytes)",
             file=sys.stderr,
         )
         source = None
@@ -91,10 +96,13 @@ def main():
         fail("run-url must be an absolute HTTP or HTTPS URL")
 
     site_dir.mkdir(parents=True, exist_ok=True)
+    remove_path(site_dir / ".git")
     target = (site_dir / relative).resolve()
     if site_dir != target and site_dir not in target.parents:
         fail("destination resolves outside site-directory")
     target.parent.mkdir(parents=True, exist_ok=True)
+    if skipped_oversize:
+        remove_path(target)
 
     if source is not None:
         staging = Path(tempfile.mkdtemp(prefix=".report-staging-", dir=target.parent))
@@ -152,24 +160,68 @@ def main():
         for expired in reports[max_reports:]:
             remove_path(safe_manifest_path(site_dir, expired["path"]))
         reports = reports[:max_reports]
-    atomic_json(manifest_path, {"reports": reports})
+    def write_report_indexes():
+        atomic_json(manifest_path, {"reports": reports})
+        links = "\n".join(
+            f'<li><a href="./{html.escape(entry["path"], quote=True)}/">'
+            f'{html.escape(entry["report_type"])} — run #{html.escape(entry["run_number"])}</a></li>'
+            for entry in reports
+        ) or "<li>No reports published yet.</li>"
+        index = (
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{html.escape(report_type)} reports</title>"
+            "<style>body{font:16px system-ui,sans-serif;max-width:50rem;margin:2rem auto;padding:0 1rem}"
+            "li{margin:.5rem 0}a{color:#2563eb}</style></head><body>"
+            f"<h1>{html.escape(report_type)} reports</h1><ul>{links}</ul>"
+            f"<p>Current run: <a href=\"{html.escape(run_url, quote=True)}\">"
+            f"#{html.escape(run_number)}</a></p></body></html>\n"
+        )
+        (site_dir / "reports.html").write_text(index, encoding="utf-8")
 
-    links = "\n".join(
-        f'<li><a href="./{html.escape(entry["path"], quote=True)}/">'
-        f'{html.escape(entry["report_type"])} — run #{html.escape(entry["run_number"])}</a></li>'
-        for entry in reports
-    ) or "<li>No reports published yet.</li>"
-    index = (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-        f"<title>{html.escape(report_type)} reports</title>"
-        "<style>body{font:16px system-ui,sans-serif;max-width:50rem;margin:2rem auto;padding:0 1rem}"
-        "li{margin:.5rem 0}a{color:#2563eb}</style></head><body>"
-        f"<h1>{html.escape(report_type)} reports</h1><ul>{links}</ul>"
-        f"<p>Current run: <a href=\"{html.escape(run_url, quote=True)}\">"
-        f"#{html.escape(run_number)}</a></p></body></html>\n"
-    )
-    (site_dir / "reports.html").write_text(index, encoding="utf-8")
+    write_report_indexes()
+
+    def site_size_bytes():
+        return sum(
+            path.lstat().st_size
+            for path in site_dir.rglob("*")
+            if path.is_symlink() or not path.is_dir()
+        )
+
+    while max_site_size_bytes and site_size_bytes() > max_site_size_bytes:
+        run_directories = sorted(
+            (
+                path for path in site_dir.iterdir()
+                if path.is_dir() and re.fullmatch(r"run-[0-9]+", path.name)
+            ),
+            key=lambda path: int(path.name[4:]),
+        )
+        old_runs = [path for path in run_directories if path.resolve() != target]
+        candidates = old_runs or ([target] if target.is_dir() else [])
+        if not candidates:
+            fail(
+                f"Pages site exceeds max-site-size-bytes ({max_site_size_bytes}) "
+                "after all report directories were removed"
+            )
+        expired = candidates[0]
+        remove_path(expired)
+        reports = [
+            entry for entry in reports
+            if safe_manifest_path(site_dir, entry["path"]) != expired.resolve()
+        ]
+        if expired.resolve() == target:
+            source = None
+        landing_page = site_dir / "index.html"
+        if landing_page.is_file() and re.fullmatch(r"run-[0-9]+", expired.name):
+            landing = landing_page.read_text(encoding="utf-8")
+            landing = re.sub(
+                rf'^.*href="\./{re.escape(expired.name)}/".*\n?',
+                "",
+                landing,
+                flags=re.MULTILINE,
+            )
+            landing_page.write_text(landing, encoding="utf-8")
+        write_report_indexes()
 
     output = env("GITHUB_OUTPUT")
     if output:

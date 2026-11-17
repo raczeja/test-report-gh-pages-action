@@ -70,6 +70,10 @@ class SiteAssemblyTests(unittest.TestCase):
             placeholder = (site / "run-25" / "index.html").read_text()
             self.assertIn("Report not available", placeholder)
             self.assertIn("Coverage unavailable", (site / "coverage" / "index.html").read_text())
+            not_found = (site / "404.html").read_text()
+            self.assertIn("This report was removed to keep the site within its size limit.", not_found)
+            self.assertIn('<a href="./..">all reports page</a>', not_found)
+            self.assertIn("window.location.href='./..'", not_found)
 
     def test_prunes_oldest_run_when_site_exceeds_configured_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +101,32 @@ class SiteAssemblyTests(unittest.TestCase):
             subprocess.run(["bash", str(SCRIPT)], check=True, env=env, capture_output=True, text=True)
             self.assertFalse((site / "run-1").exists())
             self.assertTrue((site / "run-2" / "index.html").is_file())
+
+    def test_does_not_publish_report_over_per_report_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            existing = root / "existing"
+            old_current = existing / "run-26"
+            old_current.mkdir(parents=True)
+            (old_current / "index.html").write_text("previous attempt")
+            report = root / "report"
+            report.mkdir()
+            (report / "index.html").write_text("too large")
+            site = root / "site"
+            env = os.environ.copy()
+            env.update({
+                "SITE_DIR": str(site),
+                "EXISTING_SITE_DIR": str(existing),
+                "REPORT_DIR": str(report),
+                "COVERAGE_DIR": str(root / "missing-coverage"),
+                "MAX_REPORT_SIZE_BYTES": "4",
+                "GITHUB_RUN_NUMBER": "26",
+                "GITHUB_RUN_URL": "https://github.com/owner/repo/actions/runs/26",
+                "GITHUB_WORKFLOW_NAME": "CI",
+                "GITHUB_SHA_VALUE": "abc123",
+            })
+            subprocess.run(["bash", str(SCRIPT)], check=True, env=env, capture_output=True, text=True)
+            self.assertFalse((site / "run-26").exists())
 
 
 if __name__ == "__main__":

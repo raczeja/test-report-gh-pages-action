@@ -101,6 +101,7 @@ if [ -n "$report_src" ]; then
     echo "[add] Report is $(format_mb "$report_bytes"), over the ${MAX_REPORT_SIZE_BYTES}-byte limit — not publishing it (statistics only)."
     skipped_oversize=1
     rm -rf "$REPORT_DIR"
+    rm -rf "$SITE_DIR/$RUN_FOLDER"
   fi
 fi
 if [ -d "$REPORT_DIR" ]; then
@@ -298,9 +299,9 @@ a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}
 </head><body>
 <div class="topbar"><span class="topbar-title">StatsServiceBook &middot; Test Reports</span></div>
 <div class="page">
-<h1>Report not found</h1>
-<p>This run has been pruned (oldest reports are removed to stay under the 1 GB Pages limit).</p>
-<p>Redirecting to <a href="./..">&larr; all reports</a>&hellip;</p>
+<h1>Report unavailable</h1>
+<p>This report was removed to keep the site within its size limit.</p>
+<p>Returning to the <a href="./..">all reports page</a>&hellip;</p>
 </div>
 <script>setTimeout(function(){window.location.href='./..'},3000)</script>
 </body></html>
@@ -350,7 +351,7 @@ echo "[size] Final site size: $(site_size_mb)"
   [ "$run_found" -eq 0 ] && echo "<li>No HTML reports retained yet.</li>"
   echo '</ul>'
   echo '</div>'
-  echo "  <p style=\"font-size:.8rem;color:#94a3b8\">Commit: <code>${GITHUB_SHA_VALUE}</code> · Workflow: <strong>${GITHUB_WORKFLOW_NAME}</strong></p>"
+  echo "  <p style=\"font-size:.8rem;color:#94a3b8\">Workflow: <strong>${GITHUB_WORKFLOW_NAME}</strong></p>"
   echo '</div>'
   echo '</body></html>'
 } > "$SITE_DIR/index.html"
