@@ -52,10 +52,13 @@ inputs:
 outputs:
   report-path:
     description: Absolute path of the staged report directory.
+    value: ${{ steps.publish.outputs.report-path }}
   report-url-path:
     description: Relative URL path of the staged report directory.
+    value: ${{ steps.publish.outputs.report-url-path }}
   published:
     description: Whether a report directory was staged.
+    value: ${{ steps.publish.outputs.published }}
 runs:
   using: composite
   steps:
@@ -75,6 +78,7 @@ runs:
         GITHUB_SHA_VALUE: ${{ github.sha }}
       run: bash "${{ github.action_path }}/src/assemble-pages-site.sh"
     - name: Stage static report
+      id: publish
       shell: bash
       env:
         INPUT_REPORT_DIRECTORY: ${{ inputs.report-directory }}
