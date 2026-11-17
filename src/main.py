@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 
@@ -71,13 +72,20 @@ def main():
         fail("report directory may not contain symbolic links")
     try:
         max_reports = int(env("INPUT_MAX_REPORTS", "0"))
+        max_report_age_days = int(env("INPUT_MAX_REPORT_AGE_DAYS", "7"))
         max_report_size_mb = int(env("INPUT_MAX_REPORT_SIZE_MB", "0"))
         max_report_size_bytes = int(env("INPUT_MAX_REPORT_SIZE_BYTES", "1000000000"))
         max_site_size_bytes = int(env("INPUT_MAX_SITE_SIZE_BYTES", "1000000000"))
     except ValueError:
-        fail("report and site size limits must be non-negative integers")
-    if max_reports < 0 or max_report_size_mb < 0 or max_report_size_bytes < 0 or max_site_size_bytes < 0:
-        fail("report and site size limits must be non-negative integers")
+        fail("report retention and size limits must be non-negative integers")
+    if (
+        max_reports < 0
+        or max_report_age_days < 0
+        or max_report_size_mb < 0
+        or max_report_size_bytes < 0
+        or max_site_size_bytes < 0
+    ):
+        fail("report retention and size limits must be non-negative integers")
     if max_report_size_mb:
         max_report_size_bytes = max_report_size_mb * 1024 * 1024
     source_size = (
@@ -154,8 +162,39 @@ def main():
             "run_url": run_url,
             "report_type": report_type,
             "path": relative.as_posix(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         })
     reports.sort(key=lambda item: int(item["run_number"]), reverse=True)
+    if max_report_age_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_report_age_days)
+        retained = []
+        for entry in reports:
+            created_at = entry.get("created_at")
+            if created_at is None:
+                retained.append(entry)
+                continue
+            try:
+                created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            except ValueError:
+                fail(f"existing report manifest contains an invalid created_at value: {created_at!r}")
+            if created < cutoff:
+                expired_path = safe_manifest_path(site_dir, entry["path"])
+                remove_path(expired_path)
+                landing_page = site_dir / "index.html"
+                if landing_page.is_file() and re.fullmatch(r"run-[0-9]+", expired_path.name):
+                    landing = landing_page.read_text(encoding="utf-8")
+                    landing = re.sub(
+                        rf'^.*href="\./{re.escape(expired_path.name)}/".*\n?',
+                        "",
+                        landing,
+                        flags=re.MULTILINE,
+                    )
+                    landing_page.write_text(landing, encoding="utf-8")
+            else:
+                retained.append(entry)
+        reports = retained
     if max_reports:
         for expired in reports[max_reports:]:
             remove_path(safe_manifest_path(site_dir, expired["path"]))

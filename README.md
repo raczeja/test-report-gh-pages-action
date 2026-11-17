@@ -25,6 +25,7 @@ are removed.
     report-type: Playwright
     destination: run-${{ github.run_number }}
     run-number: ${{ github.run_number }}
+    max-report-age-days: 7
 ```
 
 The initial contract is intentionally format-neutral: any static HTML report
@@ -37,6 +38,9 @@ The destination must be a safe relative path. The source must not contain
 symbolic links. Existing reports at the same destination are replaced. The
 optional `max-reports` and `max-report-size-bytes` inputs enforce report-count and
 per-report size limits. Set either to `0` to disable that limit.
+`max-report-age-days` removes reports older than the configured number of days;
+it defaults to `7`, and `0` disables age-based pruning. Age is measured from
+when the action first records each report in its manifest.
 `max-report-size-mb` is an optional MiB override; `0` uses the byte limit. The
 action requires Bash and Python 3 on the runner.
 

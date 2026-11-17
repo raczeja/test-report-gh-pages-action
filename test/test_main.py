@@ -3,6 +3,7 @@ from pathlib import Path
 import runpy
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 
@@ -76,6 +77,70 @@ class ReportActionTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertTrue((site / "run-2/index.html").is_file())
             self.assertNotIn("run-1", (site / "reports.html").read_text())
+
+    def test_age_retention_removes_reports_older_than_configured_days(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            (report / "index.html").write_text("new report")
+            site = root / "site"
+            old = site / "run-1"
+            old.mkdir(parents=True)
+            (old / "index.html").write_text("old report")
+            recent = site / "run-2"
+            recent.mkdir()
+            (recent / "index.html").write_text("recent report")
+            old_date = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+            recent_date = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+            (site / "reports.json").write_text(
+                '{"reports":['
+                '{"run_number":"1","run_url":"https://example.test/1",'
+                f'"report_type":"Playwright","path":"run-1","created_at":"{old_date}"'
+                '},{"run_number":"2","run_url":"https://example.test/2",'
+                f'"report_type":"Playwright","path":"run-2","created_at":"{recent_date}"'
+                '}]}'
+            )
+            landing = site / "index.html"
+            landing.write_text('<a href="./run-1/">run-1</a>\n<a href="./run-2/">run-2</a>\n')
+            self.run_action({
+                "INPUT_REPORT_DIRECTORY": str(report),
+                "INPUT_SITE_DIRECTORY": str(site),
+                "INPUT_DESTINATION": "run-3",
+                "INPUT_RUN_NUMBER": "3",
+                "INPUT_RUN_URL": "https://example.test/3",
+            })
+            self.assertFalse(old.exists())
+            self.assertTrue(recent.exists())
+            self.assertNotIn("run-1", landing.read_text())
+            self.assertIn("run-2", landing.read_text())
+            self.assertNotIn("run-1", (site / "reports.html").read_text())
+
+    def test_zero_age_limit_disables_age_pruning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "report"
+            report.mkdir()
+            (report / "index.html").write_text("new report")
+            site = root / "site"
+            old = site / "run-1"
+            old.mkdir(parents=True)
+            (old / "index.html").write_text("old report")
+            old_date = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            (site / "reports.json").write_text(
+                '{"reports":[{"run_number":"1","run_url":"https://example.test/1",'
+                f'"report_type":"Playwright","path":"run-1","created_at":"{old_date}"'
+                '}]}'
+            )
+            self.run_action({
+                "INPUT_REPORT_DIRECTORY": str(report),
+                "INPUT_SITE_DIRECTORY": str(site),
+                "INPUT_DESTINATION": "run-2",
+                "INPUT_RUN_NUMBER": "2",
+                "INPUT_RUN_URL": "https://example.test/2",
+                "INPUT_MAX_REPORT_AGE_DAYS": "0",
+            })
+            self.assertTrue(old.exists())
 
     def test_size_retention_removes_old_reports_until_site_fits(self):
         with tempfile.TemporaryDirectory() as tmp:

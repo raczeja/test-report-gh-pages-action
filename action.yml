@@ -37,6 +37,10 @@ inputs:
     description: Maximum indexed reports to retain; 0 means no count-based pruning.
     required: false
     default: "0"
+  max-report-age-days:
+    description: Maximum age of reports to retain in days; 0 disables age-based pruning.
+    required: false
+    default: "7"
   max-report-size-mb:
     description: Optional override for the report size limit in MiB; 0 uses max-report-size-bytes.
     required: false
@@ -87,6 +91,7 @@ runs:
         INPUT_RUN_NUMBER: ${{ inputs.run-number }}
         INPUT_RUN_URL: ${{ inputs.run-url }}
         INPUT_MAX_REPORTS: ${{ inputs.max-reports }}
+        INPUT_MAX_REPORT_AGE_DAYS: ${{ inputs.max-report-age-days }}
         INPUT_MAX_REPORT_SIZE_MB: ${{ inputs.max-report-size-mb }}
         INPUT_MAX_REPORT_SIZE_BYTES: ${{ inputs.max-report-size-bytes }}
         INPUT_MAX_SITE_SIZE_BYTES: ${{ inputs.max-site-size-bytes }}
