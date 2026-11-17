@@ -3,14 +3,20 @@
 set -euo pipefail
 
 PAGES_SIZE_LIMIT_BYTES="${PAGES_SIZE_LIMIT_BYTES:-1000000000}"
-MAX_REPORT_SIZE_MB="${MAX_REPORT_SIZE_MB:-1000}"
+MAX_REPORT_SIZE_BYTES="${MAX_REPORT_SIZE_BYTES:-1000000000}"
+MAX_REPORT_SIZE_MB="${MAX_REPORT_SIZE_MB:-0}"
 case "$PAGES_SIZE_LIMIT_BYTES" in
   ''|*[!0-9]*) echo "PAGES_SIZE_LIMIT_BYTES must be a non-negative integer" >&2; exit 1 ;;
 esac
 case "$MAX_REPORT_SIZE_MB" in
   ''|*[!0-9]*) echo "MAX_REPORT_SIZE_MB must be a non-negative integer" >&2; exit 1 ;;
 esac
-MAX_REPORT_SIZE_BYTES=$((MAX_REPORT_SIZE_MB * 1024 * 1024))
+case "$MAX_REPORT_SIZE_BYTES" in
+  ''|*[!0-9]*) echo "MAX_REPORT_SIZE_BYTES must be a non-negative integer" >&2; exit 1 ;;
+esac
+if [ "$MAX_REPORT_SIZE_MB" -gt 0 ]; then
+  MAX_REPORT_SIZE_BYTES=$((MAX_REPORT_SIZE_MB * 1024 * 1024))
+fi
 SITE_DIR="${SITE_DIR:-site}"
 EXISTING_SITE_DIR="${EXISTING_SITE_DIR:-gh-pages-current}"
 REPORT_DIR="${REPORT_DIR:-downloaded-report}"
@@ -92,7 +98,7 @@ fi
 if [ -n "$report_src" ]; then
   report_bytes="$(du -sb "$report_src" | awk '{print $1}')"
   if [ "$MAX_REPORT_SIZE_BYTES" -gt 0 ] && [ "$report_bytes" -gt "$MAX_REPORT_SIZE_BYTES" ]; then
-    echo "[add] Report is $(format_mb "$report_bytes"), over the ${MAX_REPORT_SIZE_MB} MiB limit — not publishing it (statistics only)."
+    echo "[add] Report is $(format_mb "$report_bytes"), over the ${MAX_REPORT_SIZE_BYTES}-byte limit — not publishing it (statistics only)."
     skipped_oversize=1
     rm -rf "$REPORT_DIR"
   fi

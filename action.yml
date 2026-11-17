@@ -38,9 +38,13 @@ inputs:
     required: false
     default: "0"
   max-report-size-mb:
-    description: Maximum source report size in MiB; 0 means no per-report size limit.
+    description: Optional override for the report size limit in MiB; 0 uses max-report-size-bytes.
     required: false
-    default: "1000"
+    default: "0"
+  max-report-size-bytes:
+    description: Maximum source report size in bytes; 0 disables the report size limit.
+    required: false
+    default: "1000000000"
   max-site-size-bytes:
     description: Maximum total Pages site size; oldest run reports are pruned above this limit.
     required: false
@@ -64,6 +68,7 @@ runs:
         COVERAGE_DIR: ${{ inputs.coverage-directory }}
         PAGES_SIZE_LIMIT_BYTES: ${{ inputs.max-site-size-bytes }}
         MAX_REPORT_SIZE_MB: ${{ inputs.max-report-size-mb }}
+        MAX_REPORT_SIZE_BYTES: ${{ inputs.max-report-size-bytes }}
         GITHUB_RUN_NUMBER: ${{ inputs.run-number || github.run_number }}
         GITHUB_RUN_URL: ${{ inputs.run-url || format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
         GITHUB_WORKFLOW_NAME: ${{ github.workflow }}

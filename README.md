@@ -33,15 +33,17 @@ report generation is performed here.
 
 The destination must be a safe relative path. The source must not contain
 symbolic links. Existing reports at the same destination are replaced. The
-optional `max-reports` and `max-report-size-mb` inputs enforce report-count and
-per-report size limits; `0` disables each limit. The action requires Bash and
-Python 3 on the runner.
+optional `max-reports` and `max-report-size-bytes` inputs enforce report-count and
+per-report size limits. Set either to `0` to disable that limit.
+`max-report-size-mb` is an optional MiB override; `0` uses the byte limit. The
+action requires Bash and Python 3 on the runner.
 
 Outputs are `report-path` and `report-url-path`. The action writes
 `reports.html`, updates the root landing page, carries forward the existing
 Pages directory, renders the browser-side coverage page, and prunes the oldest
 `run-*` reports if the site exceeds `max-site-size-bytes`. The default total
-site limit is 1,000,000,000 bytes. It creates a placeholder run page when no
+site limit is 1,000,000,000 bytes. The default per-report limit is also
+1,000,000,000 bytes. It creates a placeholder run page when no
 report artifact is available. `max-site-size-bytes` can be set to `0` to disable
 size-based pruning.
 
