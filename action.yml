@@ -1,0 +1,54 @@
+name: Stage test report for GitHub Pages
+description: Stage a static test report and generate a per-run report index without deploying Pages.
+inputs:
+  report-directory:
+    description: Directory containing the generated static HTML report (must contain index.html).
+    required: true
+  site-directory:
+    description: Existing Pages site directory.
+    required: false
+    default: site
+  report-type:
+    description: Human-readable report format label (for example Playwright or Allure).
+    required: false
+    default: Playwright
+  destination:
+    description: Relative path within the site directory where the current report is staged.
+    required: false
+    default: ""
+  run-number:
+    description: CI run identifier used by the report index.
+    required: false
+    default: ""
+  run-url:
+    description: URL of the CI run.
+    required: false
+    default: ""
+  max-reports:
+    description: Maximum indexed reports to retain; 0 means no count-based pruning.
+    required: false
+    default: "0"
+  max-report-size-mb:
+    description: Maximum source report size in MiB; 0 means no per-report size limit.
+    required: false
+    default: "0"
+outputs:
+  report-path:
+    description: Absolute path of the staged report directory.
+  report-url-path:
+    description: Relative URL path of the staged report directory.
+runs:
+  using: composite
+  steps:
+    - name: Stage static report
+      shell: bash
+      env:
+        INPUT_REPORT_DIRECTORY: ${{ inputs.report-directory }}
+        INPUT_SITE_DIRECTORY: ${{ inputs.site-directory }}
+        INPUT_REPORT_TYPE: ${{ inputs.report-type }}
+        INPUT_DESTINATION: ${{ inputs.destination }}
+        INPUT_RUN_NUMBER: ${{ inputs.run-number }}
+        INPUT_RUN_URL: ${{ inputs.run-url }}
+        INPUT_MAX_REPORTS: ${{ inputs.max-reports }}
+        INPUT_MAX_REPORT_SIZE_MB: ${{ inputs.max-report-size-mb }}
+      run: python3 "${{ github.action_path }}/src/main.py"

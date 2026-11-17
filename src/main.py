@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+import html
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+import tempfile
+from urllib.parse import urlparse
+
+
+def remove_path(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def fail(message):
+    print(f"test-report-gh-pages-action: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def env(name, default=""):
+    return os.environ.get(name, default)
+
+
+def atomic_json(path, value):
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as out:
+        json.dump(value, out, indent=2)
+        out.write("\n")
+        temp = Path(out.name)
+    temp.replace(path)
+
+
+def safe_manifest_path(site_dir, path_text):
+    relative = Path(path_text)
+    if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        fail(f"manifest contains an unsafe report path: {path_text!r}")
+    path = (site_dir / relative).resolve()
+    if site_dir != path and site_dir not in path.parents:
+        fail(f"manifest path resolves outside site-directory: {path_text!r}")
+    return path
+
+
+def main():
+    source = Path(env("INPUT_REPORT_DIRECTORY")).resolve()
+    site_dir = Path(env("INPUT_SITE_DIRECTORY", "site")).resolve()
+    run_number = env("INPUT_RUN_NUMBER") or env("GITHUB_RUN_NUMBER", "0")
+    destination = env("INPUT_DESTINATION") or f"run-{run_number}"
+    report_type = env("INPUT_REPORT_TYPE", "Playwright")
+    run_url = env("INPUT_RUN_URL") or (
+        f"{env('GITHUB_SERVER_URL', 'https://github.com')}/"
+        f"{env('GITHUB_REPOSITORY')}/actions/runs/{env('GITHUB_RUN_ID', '0')}"
+    )
+
+    if any("\n" in value or "\r" in value for value in (destination, run_number, report_type, run_url)):
+        fail("destination, run-number, report-type, and run-url may not contain newlines")
+    if not source.is_dir():
+        fail(f"report directory does not exist: {source}")
+    if not (source / "index.html").is_file():
+        fail(f"report directory must contain index.html: {source}")
+    if not re.fullmatch(r"[0-9]+", run_number):
+        fail("run-number must contain only digits")
+    relative = Path(destination)
+    if relative.is_absolute() or not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        fail("destination must be a safe relative path within site-directory")
+    if any(path.is_symlink() for path in source.rglob("*")):
+        fail("report directory may not contain symbolic links")
+    try:
+        max_reports = int(env("INPUT_MAX_REPORTS", "0"))
+        max_report_size_mb = int(env("INPUT_MAX_REPORT_SIZE_MB", "0"))
+    except ValueError:
+        fail("max-reports and max-report-size-mb must be non-negative integers")
+    if max_reports < 0 or max_report_size_mb < 0:
+        fail("max-reports and max-report-size-mb must be non-negative integers")
+    source_size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+    if max_report_size_mb and source_size > max_report_size_mb * 1024 * 1024:
+        fail(f"report is {source_size} bytes, above the {max_report_size_mb} MiB limit")
+    parsed_url = urlparse(run_url)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+        fail("run-url must be an absolute HTTP or HTTPS URL")
+
+    site_dir.mkdir(parents=True, exist_ok=True)
+    target = (site_dir / relative).resolve()
+    if site_dir != target and site_dir not in target.parents:
+        fail("destination resolves outside site-directory")
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    staging = Path(tempfile.mkdtemp(prefix=".report-staging-", dir=target.parent))
+    backup = target.with_name(target.name + ".previous")
+    try:
+        shutil.copytree(source, staging, dirs_exist_ok=True)
+        if backup.exists():
+            remove_path(backup)
+        if target.exists():
+            target.replace(backup)
+        try:
+            staging.replace(target)
+        except OSError:
+            if backup.exists() and not target.exists():
+                backup.replace(target)
+            raise
+        if backup.exists():
+            remove_path(backup)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+    manifest_path = site_dir / "reports.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            fail(f"cannot read existing report manifest {manifest_path}: {exc}")
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("reports"), list):
+            fail(f"existing report manifest {manifest_path} must contain a reports array")
+    else:
+        manifest = {"reports": []}
+
+    reports = []
+    for entry in manifest["reports"]:
+        if (
+            not isinstance(entry, dict)
+            or not re.fullmatch(r"[0-9]+", str(entry.get("run_number", "")))
+            or not isinstance(entry.get("report_type"), str)
+        ):
+            fail(f"existing report manifest contains an invalid entry: {entry!r}")
+        old_path = safe_manifest_path(site_dir, str(entry.get("path", "")))
+        if old_path.is_dir() and (old_path / "index.html").is_file():
+            if str(entry.get("run_number")) != run_number and entry.get("path") != relative.as_posix():
+                reports.append(entry)
+    reports.append({
+        "run_number": run_number,
+        "run_url": run_url,
+        "report_type": report_type,
+        "path": relative.as_posix(),
+    })
+    reports.sort(key=lambda item: int(item["run_number"]), reverse=True)
+    if max_reports:
+        for expired in reports[max_reports:]:
+            remove_path(safe_manifest_path(site_dir, expired["path"]))
+        reports = reports[:max_reports]
+    atomic_json(manifest_path, {"reports": reports})
+
+    links = "\n".join(
+        f'<li><a href="./{html.escape(entry["path"], quote=True)}/">'
+        f'{html.escape(entry["report_type"])} — run #{html.escape(entry["run_number"])}</a></li>'
+        for entry in reports
+    ) or "<li>No reports published yet.</li>"
+    index = (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<title>{html.escape(report_type)} reports</title>"
+        "<style>body{font:16px system-ui,sans-serif;max-width:50rem;margin:2rem auto;padding:0 1rem}"
+        "li{margin:.5rem 0}a{color:#2563eb}</style></head><body>"
+        f"<h1>{html.escape(report_type)} reports</h1><ul>{links}</ul>"
+        f"<p>Current run: <a href=\"{html.escape(run_url, quote=True)}\">"
+        f"#{html.escape(run_number)}</a></p></body></html>\n"
+    )
+    (site_dir / "reports.html").write_text(index, encoding="utf-8")
+
+    output = env("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a", encoding="utf-8") as out:
+            out.write(f"report-path={target}\n")
+            out.write(f"report-url-path={relative.as_posix()}/\n")
+    print(f"Staged {report_type} report at {target}")
+
+
+if __name__ == "__main__":
+    main()
